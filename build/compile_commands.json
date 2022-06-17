@@ -1,0 +1,17 @@
+[
+{
+  "directory": "/home/opencv_cpu/build",
+  "command": "/usr/bin/c++   -I/home/opencv_cpu/./src -isystem /usr/local/include/opencv4  -g   -fopenmp -std=gnu++11 -o CMakeFiles/guidedfilter_cpu.dir/src/guidedfilter.cpp.o -c /home/opencv_cpu/src/guidedfilter.cpp",
+  "file": "/home/opencv_cpu/src/guidedfilter.cpp"
+},
+{
+  "directory": "/home/opencv_cpu/build",
+  "command": "/usr/bin/c++   -isystem /usr/local/include/opencv4  -g   -std=gnu++11 -o CMakeFiles/opencv_test.dir/src/opencv_test.cpp.o -c /home/opencv_cpu/src/opencv_test.cpp",
+  "file": "/home/opencv_cpu/src/opencv_test.cpp"
+},
+{
+  "directory": "/home/opencv_cpu/build",
+  "command": "/usr/local/cuda/bin/nvcc   -isystem=/usr/local/include/opencv4 -I/usr/local/cuda/include  -g   -std=c++11 -x cu -c /home/opencv_cpu/src/guidedfilter.cu -o CMakeFiles/guidedfilter_gpu.dir/src/guidedfilter.cu.o",
+  "file": "/home/opencv_cpu/src/guidedfilter.cu"
+}
+]

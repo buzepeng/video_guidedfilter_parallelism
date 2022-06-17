@@ -1,0 +1,1 @@
+/usr/bin/c++  -g   CMakeFiles/guidedfilter_.dir/src/guidedfilter.cpp.o  -o guidedfilter_  -L/usr/local/cuda/lib64 
