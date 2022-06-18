@@ -3,6 +3,11 @@
 #include <iostream>
 #include <vector>
 
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+
 #define TILE_W      16
 #define TILE_H      16
 #define RADIUS      6
@@ -12,6 +17,13 @@
 #define BLOCK_W     (TILE_W+(2*RADIUS))
 #define BLOCK_H     (TILE_H+(2*RADIUS))
 #define PAR_NUM     8
+
+std::mutex mtx;
+std::condition_variable produce, consume;
+std::queue<cv::Mat> q;
+int max_size = 20;
+bool finished = false, inited = false;
+int width, height, fps, frame_Number;
 
 __device__ float3 operator+(float3 a, float3 b){
     return make_float3(a.x+b.x, a.y+b.y, a.z+b.z);
@@ -185,7 +197,9 @@ __global__ void convert2float_kernel(uchar3 *d_input,
 
     int idx = y * width + x; 
     if (x >= 0 && y >= 0 && x < width && y < height) {
-        d_output[idx] = make_float3(d_input[idx].x/255.0, d_input[idx].y/255.0, d_input[idx].x/255.0);
+        d_output[idx].x = d_input[idx].x/255.0;
+        d_output[idx].y = d_input[idx].y/255.0;
+        d_output[idx].z = d_input[idx].z/255.0;
     }
 }
 
@@ -199,7 +213,9 @@ __global__ void convert2uchar_kernel(float3 *d_input,
 
     int idx = y * width + x; 
     if (x >= 0 && y >= 0 && x < width && y < height) {
-        d_output[idx] = make_uchar3(d_input[idx].x*255.0, d_input[idx].y*255.0, d_input[idx].x*255.0);
+        d_output[idx].x = (uchar)(d_input[idx].x*255.0);
+        d_output[idx].y = (uchar)(d_input[idx].y*255.0);
+        d_output[idx].z = (uchar)(d_input[idx].z*255.0);
     }
 }
 
@@ -280,74 +296,75 @@ class GuidedFilter{
     }
 };
 
-int main(int argc, char *argv[]) {
-    std::string input_file = "../data/bigbang.mp4";
-    std::string output_file = "../data/bigbang_guided.mp4";
+void consumer(std::string output_file){
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    int codec = cv::VideoWriter::fourcc('a', 'v', 'c', '1');
+    cv::VideoWriter writer;
+
+    cv::Mat::setDefaultAllocator(cv::cuda::HostMem::getAllocator (cv::cuda::HostMem::AllocType::PAGE_LOCKED));
+
+    while(!inited);
+    writer.open(output_file.c_str(), codec, fps, cv::Size(width, height), true);
+    auto guidedfilter = GuidedFilter(width, height);
+    cv::Mat input(height, width, CV_8UC3), output(height, width, CV_8UC3);
+
+    while(!finished){
+        std::unique_lock<std::mutex> lck(mtx);
+        while(q.size()==0)  consume.wait(lck);
+        input = q.front();
+        q.pop();
+        guidedfilter.filter(input.ptr<uchar3>(), output.ptr<uchar3>(), input.ptr<uchar3>(), stream);
+        writer.write(output);
+        
+        produce.notify_all();
+        lck.unlock();
+    }
+    writer.release();
+}
+
+void producer(std::string input_file){
     cv::VideoCapture capture(input_file.c_str());
     if(!capture.isOpened()){
         std::cout<<"could not open the video!\n";
     }
-    int fps = capture.get(cv::CAP_PROP_FPS);
-    int height = capture.get(cv::CAP_PROP_FRAME_HEIGHT);
-    int width = capture.get(cv::CAP_PROP_FRAME_WIDTH);
-    int frame_Number = capture.get(cv::CAP_PROP_FRAME_COUNT);
-    int codec = cv::VideoWriter::fourcc('a', 'v', 'c', '1');
+    fps = capture.get(cv::CAP_PROP_FPS);
+    height = capture.get(cv::CAP_PROP_FRAME_HEIGHT);
+    width = capture.get(cv::CAP_PROP_FRAME_WIDTH);
+    frame_Number = capture.get(cv::CAP_PROP_FRAME_COUNT);
+    inited = true;
 
-    cv::VideoWriter writer;
-    writer.open(output_file.c_str(), codec, fps, cv::Size(width, height), true);
+    cv::Mat::setDefaultAllocator(cv::cuda::HostMem::getAllocator (cv::cuda::HostMem::AllocType::PAGE_LOCKED));
+    cv::Mat frame(height, width, CV_8UC3);
+    while(capture.read(frame)){
+        std::unique_lock<std::mutex> lck(mtx);
+        while(q.size()==max_size)   produce.wait(lck);
+        q.emplace(frame);
+        consume.notify_all();
+        lck.unlock();
+    }
+    finished = true;
+
+    capture.release();
+}
+
+int main(int argc, char *argv[]) {
+    std::string input_file = "../data/bigbang.mp4";
+    std::string output_file = "../data/bigbang_guided.mp4";
+    cudaSetDevice(1);
 
     auto startTime = std::chrono::system_clock::now();
-    cv::Mat frame(height, width, CV_8UC3);
-    //one stream
-    auto guided_filter = GuidedFilter(width, height);
-    cudaStream_t stream;
-	cudaStreamCreate(&stream);
-    while(capture.read(frame)){
-        // frame.convertTo(frame, CV_32FC3, 1.0/255.0, 0);
-        cv::Mat output (frame.size(), frame.type());
-        guided_filter.filter(frame.ptr<uchar3>(), output.ptr<uchar3>(), frame.ptr<uchar3>(), stream);
-        // output.convertTo(output, CV_8UC3, 255.0, 0);
-        writer.write(output); 
-    }
-    cudaStreamDestroy(stream);
-    //multi streams
-    // cudaSetDevice(1);
-    // cudaStream_t streams[PAR_NUM];
-    // GuidedFilter guidedfilters[PAR_NUM] = GuidedFilter(width, height);
-    // for(int i = 0;i<PAR_NUM;i++){
-    //     cudaStreamCreate(&streams[i]);
-    // }
 
-    // bool continue_frame = true;
-    // int stream_num = PAR_NUM;
-    // while(continue_frame){
-    //     std::vector<cv::Mat> frames;
-    //     for(int frame_cnt = 0; frame_cnt<PAR_NUM;frame_cnt++){
-    //         if(!capture.read(frame)){
-    //             continue_frame = false;
-    //             stream_num = frame_cnt+1;
-    //             break;
-    //         }else{
-    //             frames.push_back(frame.clone());
-    //         }
-    //     }
-    //     for(int i = 0;i<stream_num;i++)
-    //     {   
-    //         // cv::Mat output = cv::Mat(height, width, CV_8UC3);
-    //         guidedfilters[i].filter(frames[i].ptr<uchar3>(), frames[i].ptr<uchar3>(), frames[i].ptr<uchar3>(), streams[i]);
-    //         // output.convertTo(outputs[i], CV_8UC3, 255.0, 0);
-    //     }
-        
-    //     for(int i = 0;i<stream_num;i++){
-    //         writer.write(frames[i]);
-    //     }
-    // }
-    // for(int i = 0;i<PAR_NUM;i++)    cudaStreamDestroy(streams[i]);
+    std::thread consume_th, produce_th;
+    produce_th = std::thread(producer, input_file);
+    consume_th = std::thread(consumer, output_file);
+    produce_th.join();
+    consume_th.join();
+
     auto endTime = std::chrono::system_clock::now();
     int process_time = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
     std::cout << "time:" <<process_time<< "ms, mean time:"<< (float)process_time/frame_Number << "ms"<< std::endl;
-    capture.release();
-    writer.release();
-    
+ 
     return 0;
 }
